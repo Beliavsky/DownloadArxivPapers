@@ -5,6 +5,7 @@ import requests
 import feedparser
 import argparse
 from urllib.parse import quote_plus
+from datetime import datetime
 
 # Configure stdout to handle UTF-8 encoding to prevent UnicodeEncodeError
 if sys.version_info >= (3, 7):
@@ -65,17 +66,20 @@ def build_filename(first_name: str, last_name: str, title: str) -> str:
         return f"{title}.pdf"
 
 
-def search_arxiv(researcher_name: str, max_papers: int = 5, title_filter: str = ""):
+def search_arxiv(researcher_name: str, max_papers: int = 5, title_filter: str = "",
+                start_year: int = None, end_year: int = None):
     """
-    Searches arXiv for papers based on author and/or title filter.
+    Searches arXiv for papers based on author, title filter, and year range.
     
     Parameters:
     - researcher_name: Author's full name (optional)
-    - max_papers: Maximum number of PDFs to download
+    - max_papers: Maximum number of PDFs to retrieve
     - title_filter: Substring that must appear in the title (optional)
+    - start_year: Start year for publication (inclusive, optional)
+    - end_year: End year for publication (inclusive, optional)
     
     Returns:
-    - List of tuples: (title, pdf_url)
+    - List of tuples: (title, authors, year, pdf_url)
     """
     # Build the search query
     queries = []
@@ -113,6 +117,12 @@ def search_arxiv(researcher_name: str, max_papers: int = 5, title_filter: str = 
     # Normalize the title filter for case-insensitive comparison
     title_filter_lower = title_filter.lower()
     
+    # Prepare year range
+    if start_year:
+        start_date = datetime(start_year, 1, 1)
+    if end_year:
+        end_date = datetime(end_year, 12, 31)
+    
     # Split the input name for substring matching
     if researcher_name.strip():
         target_name_lower = researcher_name.lower()
@@ -124,12 +134,29 @@ def search_arxiv(researcher_name: str, max_papers: int = 5, title_filter: str = 
         if title_filter and (title_filter_lower not in title.lower()):
             continue
         
+        # Year range filter
+        published_str = entry.published
+        try:
+            published_date = datetime.strptime(published_str, "%Y-%m-%dT%H:%M:%SZ")
+            published_year = published_date.year
+        except ValueError:
+            # If date parsing fails, skip this entry
+            continue
+        
+        if start_year and published_year < start_year:
+            continue
+        if end_year and published_year > end_year:
+            continue
+        
         # If author filter is provided, verify the authors contain the substring
         if researcher_name.strip():
             authors = [a.get('name', '').lower() for a in entry.authors]
             # Check if any author's name contains the target substring
             if not any(target_name_lower in author for author in authors):
                 continue
+        else:
+            # If no author filter, retrieve authors for listing purposes
+            authors = [a.get('name', '') for a in entry.authors]
         
         # Retrieve the PDF link
         pdf_link = None
@@ -142,7 +169,9 @@ def search_arxiv(researcher_name: str, max_papers: int = 5, title_filter: str = 
                 break
         
         if pdf_link:
-            results.append((title, pdf_link))
+            # Join authors into a single string
+            authors_str = ', '.join(authors)
+            results.append((title, authors_str, published_year, pdf_link))
     
     return results
 
@@ -151,6 +180,8 @@ def download_papers(
     researcher_name: str, 
     n: int = 5, 
     title_filter: str = "",
+    start_year: int = None,
+    end_year: int = None,
     list_only: bool = False
 ):
     """
@@ -160,6 +191,8 @@ def download_papers(
     - researcher_name: Author's full name (optional)
     - n: Maximum number of PDFs to download
     - title_filter: Substring that must appear in the title (optional)
+    - start_year: Start year for publication (inclusive, optional)
+    - end_year: End year for publication (inclusive, optional)
     - list_only: If True, only prints matching papers without downloading
     """
     first_name, last_name = split_name(researcher_name)
@@ -168,7 +201,9 @@ def download_papers(
     arxiv_results = search_arxiv(
         researcher_name=researcher_name,
         max_papers=n,
-        title_filter=title_filter
+        title_filter=title_filter,
+        start_year=start_year,
+        end_year=end_year
     )
     
     # Limit the results to n
@@ -180,17 +215,21 @@ def download_papers(
     
     if list_only:
         print(f"Found {len(arxiv_results)} paper(s) matching the criteria:\n")
-        for i, (title, pdf_url) in enumerate(arxiv_results, start=1):
-            print(f"[{i}] Title: {title}")
-            print(f"    PDF Link: {pdf_url}\n")
+        for i, (title, authors, year, pdf_url) in enumerate(arxiv_results, start=1):
+            print(f"[{i}] Title       : {title}")
+            print(f"    Authors     : {authors}")
+            print(f"    Year        : {year}")
+            print(f"    PDF Link    : {pdf_url}\n")
     else:
         print(f"Found {len(arxiv_results)} paper(s). Starting download...\n")
-        for i, (title, pdf_url) in enumerate(arxiv_results, start=1):
+        for i, (title, authors, year, pdf_url) in enumerate(arxiv_results, start=1):
             # Process the title for filename
             sanitized_title = sanitize_filename(title.lower())
             filename = build_filename(first_name, last_name, sanitized_title)
             
             print(f"[{i}] Downloading: {title}")
+            print(f"    Authors     : {authors}")
+            print(f"    Year        : {year}")
             print(f"    from: {pdf_url}")
             
             try:
@@ -218,7 +257,7 @@ def print_usage():
     """
     usage_text = """
 Usage:
-    python xdownload_papers_arxiv.py "<RESEARCHER_NAME>" <N> "<TITLE_FILTER>" [--list]
+    python xdownload_papers_arxiv.py "<RESEARCHER_NAME>" <N> "<TITLE_FILTER>" [--start_year YEAR] [--end_year YEAR] [--list]
     
 Parameters:
     <RESEARCHER_NAME> : Author's full name (e.g., "Marvin Lettau"). 
@@ -226,7 +265,9 @@ Parameters:
     <N>               : Maximum number of PDFs to download (integer).
     <TITLE_FILTER>    : Substring to filter titles (e.g., "machine learning").
                         Use empty quotes "" to skip title filtering.
-    [--list]          : Optional flag. If specified, the script will only list matching papers without downloading.
+    [--start_year YEAR] : Start year for publication (inclusive, optional).
+    [--end_year YEAR]   : End year for publication (inclusive, optional).
+    [--list]            : Optional flag. If specified, the script will only list matching papers without downloading.
     
 Examples:
     1. Search by author only and download PDFs:
@@ -238,11 +279,11 @@ Examples:
     3. Search by both author and title substring and download PDFs:
        python xdownload_papers_arxiv.py "Richardson" 5 "fortran"
     
-    4. Search by author and title substring and list papers without downloading:
-       python xdownload_papers_arxiv.py "Richardson" 5 "fortran" --list
+    4. Search by author and title substring within a year range and download PDFs:
+       python xdownload_papers_arxiv.py "Richardson" 5 "fortran" --start_year 2015 --end_year 2020
     
-    5. Search by title only and list papers without downloading:
-       python xdownload_papers_arxiv.py "" 5 "fortran" --list
+    5. Search by title only within a year range and list papers without downloading:
+       python xdownload_papers_arxiv.py "" 5 "fortran" --start_year 2010 --end_year 2020 --list
     """
     print(usage_text)
 
@@ -252,7 +293,7 @@ def main():
     Main function to parse arguments and initiate the download or listing process.
     """
     parser = argparse.ArgumentParser(
-        description="Search and download papers from arXiv based on author and/or title filters.",
+        description="Search and download papers from arXiv based on author, title, and year range filters.",
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="""
 Examples:
@@ -265,11 +306,11 @@ Examples:
     3. Search by both author and title substring and download PDFs:
        python xdownload_papers_arxiv.py "Richardson" 5 "fortran"
     
-    4. Search by author and title substring and list papers without downloading:
-       python xdownload_papers_arxiv.py "Richardson" 5 "fortran" --list
+    4. Search by author and title substring within a year range and download PDFs:
+       python xdownload_papers_arxiv.py "Richardson" 5 "fortran" --start_year 2015 --end_year 2020
     
-    5. Search by title only and list papers without downloading:
-       python xdownload_papers_arxiv.py "" 5 "fortran" --list
+    5. Search by title only within a year range and list papers without downloading:
+       python xdownload_papers_arxiv.py "" 5 "fortran" --start_year 2010 --end_year 2020 --list
 """
     )
     
@@ -279,6 +320,8 @@ Examples:
     parser.add_argument('title_filter', type=str, help='Substring to filter titles (use "" to skip)')
     
     # Optional arguments
+    parser.add_argument('--start_year', type=int, help='Start year for publication (inclusive)', default=None)
+    parser.add_argument('--end_year', type=int, help='End year for publication (inclusive)', default=None)
     parser.add_argument('--list', action='store_true', help='List matching papers without downloading')
     
     args = parser.parse_args()
@@ -287,6 +330,8 @@ Examples:
     name_input = args.researcher_name
     n_pdfs = args.n
     title_filter = args.title_filter
+    start_year = args.start_year
+    end_year = args.end_year
     list_only = args.list
     
     # Validate 'n_pdfs'
@@ -295,10 +340,17 @@ Examples:
         print_usage()
         sys.exit(1)
     
+    # Validate year range
+    if start_year and end_year and start_year > end_year:
+        print("Error: --start_year cannot be greater than --end_year.\n")
+        print_usage()
+        sys.exit(1)
+    
     # Display the search criteria
     print("=== arXiv PDF Downloader ===\n")
     print(f"Author Filter    : {'None' if not name_input.strip() else name_input}")
     print(f"Title Filter     : {'None' if not title_filter.strip() else title_filter}")
+    print(f"Year Range       : {'None' if not (start_year or end_year) else f'{start_year if start_year else "-∞"} to {end_year if end_year else "∞"}'}")
     print(f"Number of PDFs   : {n_pdfs}")
     print(f"Action           : {'List only' if list_only else 'Download PDFs'}\n")
     
@@ -307,6 +359,8 @@ Examples:
         researcher_name=name_input,
         n=n_pdfs,
         title_filter=title_filter,
+        start_year=start_year,
+        end_year=end_year,
         list_only=list_only
     )
     
