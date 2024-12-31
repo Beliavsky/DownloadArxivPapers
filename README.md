@@ -172,3 +172,5 @@ Found 4 paper(s) matching the criteria:
 
 Process completed.
 ```
+The script `xfilter_arxiv_text.py` filters the results of `xarxiv.py` saved to a text file. Instead of repeatedly querying arXiv
+and possibly violating their usage policy, one can save the results of a large query and then filter those results locally.
