@@ -1,16 +1,22 @@
 """
-Searches arXiv for papers based on author(s), title filter, and year
-range. It retrieves paper details such as title, authors, year, PDF
-link, and optionally abstracts.
+Reformat bibliographic entries for consistent colon alignment and author name capitalization.
+
+This script searches arXiv for papers based on author(s), title filter, and year range.
+It retrieves paper details such as title, authors, year, category, PDF link, and optionally abstracts.
+The script formats the output to ensure that colons in the Title, Authors, Year, Category, PDF Link,
+and Abstract fields are vertically aligned. Additionally, it capitalizes authors' names appropriately.
 
 Usage:
     python xarxiv.py "<AUTHORS_QUERY>" <N> "<TITLE_FILTER>" [--start_year YEAR] [--end_year YEAR] [--list] [--abstract]
 
 Parameters:
     <AUTHORS_QUERY>   : Author query prefixed with a logical operator ("AND" or "OR") followed by comma-separated author names.
+                        To skip author filtering, use an empty string "".
                         Examples:
                             "AND John Doe, Jim Smith"
                             "OR Alice Johnson, Bob Lee"
+                            "OR"  # No author filtering
+                            ""   # No author filtering
     <N>               : Maximum number of PDFs to download (integer).
     <TITLE_FILTER>    : Substring that must appear in the title (e.g., "machine learning"). Use empty quotes "" to skip title filtering.
     [--start_year YEAR] : Start year for publication (inclusive, optional).
@@ -26,7 +32,7 @@ Examples:
        python xarxiv.py "OR John Doe, Jim Smith" 10 ""
 
     3. Search by title only and download PDFs:
-       python xarxiv.py "OR" 5 "fortran"
+       python xarxiv.py "" 5 "fortran"
 
     4. Search by both authors and title substring and download PDFs:
        python xarxiv.py "AND John Doe, Jim Smith" 5 "fortran"
@@ -35,7 +41,7 @@ Examples:
        python xarxiv.py "AND John Doe, Jim Smith" 10 "" --start_year 2015 --end_year 2020 --list
 
     6. Search by authors, list papers without downloading, and include abstracts:
-       python xarxiv.py "OR John Doe, Jim Smith" 10 "" --list --abstract
+       python xarxiv.py "" 10 "realized volatility" --list --abstract
 """
 
 import os
@@ -78,45 +84,64 @@ def split_authors(authors_query: str):
 
     Parameters:
         authors_query (str): A string starting with a logical operator followed by comma-separated author names.
+                             If only the operator is provided without any authors, or if the string is empty,
+                             it's treated as no author filtering.
 
     Returns:
         tuple: (operator, list_of_authors)
     """
+    if not authors_query.strip():
+        # No author filtering
+        return None, []
+    
     # Regex to capture operator and authors
-    match = re.match(r'^(AND|OR)\s+(.*)$', authors_query.strip(), re.IGNORECASE)
+    match = re.match(r'^(AND|OR)\s*(.*)$', authors_query.strip(), re.IGNORECASE)
     if not match:
-        raise ValueError("Invalid AUTHORS_QUERY format. It should start with 'AND' or 'OR' followed by author names.")
+        raise ValueError("Invalid AUTHORS_QUERY format. It should start with 'AND' or 'OR' followed by author names, or be empty to skip author filtering.")
     
     operator = match.group(1).upper()
     authors_str = match.group(2)
-    # Split authors by comma and strip whitespace
-    authors = [author.strip() for author in authors_str.split(',') if author.strip()]
-    
-    if not authors:
-        raise ValueError("No authors specified in AUTHORS_QUERY.")
+    # Split authors by comma and strip whitespace, only if authors_str is not empty
+    authors = [author.strip() for author in authors_str.split(',') if author.strip()] if authors_str else []
     
     return operator, authors
 
 
-def build_arxiv_query(operator: str, authors: list) -> str:
+def build_arxiv_query(operator: str, authors: list, title_filter: str = None) -> str:
     """
-    Constructs the arXiv API query string based on the logical operator and list of authors.
+    Constructs the arXiv API query string based on the logical operator, list of authors, and optional title filter.
 
     Parameters:
-        operator (str): Logical operator ("AND" or "OR").
+        operator (str): Logical operator ("AND" or "OR"). None if no author filtering.
         authors (list): List of author names.
+        title_filter (str): Optional. Substring that must appear in the title.
 
     Returns:
         str: Formatted arXiv query string.
     """
-    if operator not in {"AND", "OR"}:
-        raise ValueError("Logical operator must be 'AND' or 'OR'.")
+    query_parts = []
     
-    # Construct individual author queries
-    author_queries = [f'au:"{author}"' for author in authors]
+    if authors:
+        # Construct individual author queries
+        author_queries = [f'au:"{author}"' for author in authors]
+        # Join with the specified operator
+        combined_authors_query = f' {operator} '.join(author_queries)
+        query_parts.append(f'({combined_authors_query})')
     
-    # Join with the specified operator
-    combined_query = f' {operator} '.join(author_queries)
+    if title_filter:
+        # Add title filter
+        # Only use quotes for multi-word title filters
+        if ' ' in title_filter.strip():
+            query_parts.append(f'ti:"{title_filter.strip()}"')
+        else:
+            query_parts.append(f'ti:{title_filter.strip()}')
+    
+    if query_parts:
+        # Combine all parts with AND
+        combined_query = ' AND '.join(query_parts)
+    else:
+        # If no filters are provided, perform a broad search
+        combined_query = 'all:"all"'
     
     return combined_query
 
@@ -168,48 +193,73 @@ def capitalize_author_names(authors_str):
     return ', '.join(capitalized_authors)
 
 
+def reconstruct_search_command() -> str:
+    """
+    Reconstructs the original search command with proper quoting for arguments containing spaces or empty strings.
+
+    Returns:
+        str: The reconstructed search command.
+    """
+    command = ['python']
+    # Iterate over sys.argv starting from index 1 to skip the script name
+    for arg in sys.argv[1:]:
+        if arg == '':
+            # Represent empty string as ""
+            command.append('""')
+        elif ' ' in arg or '"' in arg:
+            # Escape existing double quotes
+            escaped_arg = arg.replace('"', r'\"')
+            # Wrap the argument in double quotes
+            command.append(f'"{escaped_arg}"')
+        else:
+            command.append(arg)
+    return ' '.join(command)
+
+
 def search_arxiv(authors_query: str, max_papers: int = 5, title_filter: str = "",
                 start_year: int = None, end_year: int = None):
     """
     Searches arXiv for papers based on authors, title filter, and year range.
 
     Parameters:
-    - authors_query: Author query string starting with a logical operator followed by author names.
+    - authors_query: Author query string starting with a logical operator followed by author names, or empty for no author filtering.
     - max_papers: Maximum number of PDFs to retrieve
     - title_filter: Substring that must appear in the title (optional)
     - start_year: Start year for publication (inclusive, optional)
     - end_year: End year for publication (inclusive, optional)
 
     Returns:
-    - List of tuples: (title, authors, year, pdf_url, abstract)
+    - List of tuples: (title, authors, year, category, pdf_url, abstract)
     """
     # Parse authors query
     operator, authors = split_authors(authors_query)
     
     # Build arXiv query
-    combined_query = build_arxiv_query(operator, authors)
+    combined_query = build_arxiv_query(operator, authors, title_filter=title_filter)
     
     # URL encode the search query
     encoded_query = quote_plus(combined_query)
     
-    # Define a reasonable width for wrapping
-    wrap_width = 80  # You can adjust this as needed
+    # Determine how many results to fetch initially
+    # To account for post-filtering, fetch more than max_papers
+    fetch_multiplier = 5  # Adjust as needed
+    fetch_size = max_papers * fetch_multiplier
     
     # Construct the API query URL
     query_url = (
         f'http://export.arxiv.org/api/query?search_query={encoded_query}'
-        f'&start=0&max_results={max_papers}&sortBy=lastUpdatedDate&sortOrder=descending'
+        f'&start=0&max_results={fetch_size}&sortBy=lastUpdatedDate&sortOrder=descending'
     )
     
-    # Include title filter if provided
-    if title_filter.strip():
-        title_encoded = quote_plus(f'ti:"{title_filter}"')
-        query_url += f'&title_filter={title_encoded}'
-    
+    # Display search parameters
     print(f"Searching arXiv with query: {combined_query}")
     if title_filter.strip():
         print(f"Title Filter: {title_filter}")
-    print()
+    print(f"API URL      : {query_url}\n")
+    
+    # Print the search command for easy re-running
+    search_command = reconstruct_search_command()
+    print(f"Search Command   : {search_command}\n")
     
     # Parse the feed
     feed = feedparser.parse(query_url)
@@ -228,7 +278,7 @@ def search_arxiv(authors_query: str, max_papers: int = 5, title_filter: str = ""
         title = ' '.join(entry.title.strip().split())  # Normalize spaces
         abstract = ' '.join(entry.summary.strip().split())  # Normalize spaces
         
-        # Title filter check (redundant if title_filter is used in the query, but kept for safety)
+        # Exact substring match (case-insensitive)
         if title_filter and (title_filter_lower not in title.lower()):
             continue
         
@@ -250,6 +300,16 @@ def search_arxiv(authors_query: str, max_papers: int = 5, title_filter: str = ""
         authors = [a.get('name', '') for a in entry.authors]
         authors_str = ', '.join(authors)
         
+        # Category extraction
+        category = ''
+        if 'arxiv_primary_category' in entry:
+            category = entry.arxiv_primary_category['term']
+        elif 'tags' in entry:
+            # Fallback to first tag if primary category not found
+            category = entry.tags[0]['term'] if entry.tags else 'unknown'
+        else:
+            category = 'unknown'
+        
         # Retrieve the PDF link
         pdf_link = None
         for link in entry.links:
@@ -261,9 +321,12 @@ def search_arxiv(authors_query: str, max_papers: int = 5, title_filter: str = ""
                 break
         
         if pdf_link:
-            results.append((title, authors_str, published_year, pdf_link, abstract))
+            results.append((title, authors_str, published_year, category, pdf_link, abstract))
     
-    return results
+    # Now, ensure we have at most max_papers exact matches
+    exact_matches = results[:max_papers]
+    
+    return exact_matches
 
 
 def download_papers(
@@ -279,7 +342,7 @@ def download_papers(
     Orchestrates the search on arXiv and optionally downloads the PDFs.
 
     Parameters:
-    - authors_query: Author query string starting with a logical operator followed by author names.
+    - authors_query: Author query string starting with a logical operator followed by author names, or empty for no author filtering.
     - n: Maximum number of PDFs to download
     - title_filter: Substring that must appear in the title (optional)
     - start_year: Start year for publication (inclusive, optional)
@@ -306,7 +369,7 @@ def download_papers(
     
     if list_only:
         print(f"Found {len(arxiv_results)} paper(s) matching the criteria:\n")
-        for i, (title, authors, year, pdf_url, abstract) in enumerate(arxiv_results, start=1):
+        for i, (title, authors, year, category, pdf_url, abstract) in enumerate(arxiv_results, start=1):
             # Capitalize authors' names
             authors_capitalized = capitalize_author_names(authors)
             # Prepare prefix and padding for alignment
@@ -328,6 +391,10 @@ def download_papers(
             year_prefix = "    Year"
             padding_year = ' ' * (14 - len(year_prefix)) if len(year_prefix) < 14 else ' '
             print(f"{year_prefix}{padding_year}: {year}")
+            # Format Category
+            category_prefix = "    Category"
+            padding_category = ' ' * (14 - len(category_prefix)) if len(category_prefix) < 14 else ' '
+            print(f"{category_prefix}{padding_category}: {category}")
             # Format PDF Link
             pdf_prefix = "    PDF Link"
             padding_pdf = ' ' * (14 - len(pdf_prefix)) if len(pdf_prefix) < 14 else ' '
@@ -347,7 +414,7 @@ def download_papers(
                 print()  # Add an empty line for spacing
     else:
         print(f"Found {len(arxiv_results)} paper(s). Starting download...\n")
-        for i, (title, authors, year, pdf_url, abstract) in enumerate(arxiv_results, start=1):
+        for i, (title, authors, year, category, pdf_url, abstract) in enumerate(arxiv_results, start=1):
             # Process the title for filename
             sanitized_title = sanitize_filename(title.lower())
             # Split authors to extract first and last names for filename
@@ -371,6 +438,7 @@ def download_papers(
             authors_capitalized = capitalize_author_names(authors)
             print(f"    Authors     : {authors_capitalized}")
             print(f"    Year        : {year}")
+            print(f"    Category    : {category}")
             print(f"    from: {pdf_url}")
             
             try:
@@ -404,9 +472,12 @@ Usage:
 
 Parameters:
     <AUTHORS_QUERY>   : Author query prefixed with a logical operator ("AND" or "OR") followed by comma-separated author names.
+                        To skip author filtering, use an empty string "".
                         Examples:
                             "AND John Doe, Jim Smith"
                             "OR Alice Johnson, Bob Lee"
+                            "OR"  # No author filtering
+                            ""   # No author filtering
     <N>               : Maximum number of PDFs to download (integer).
     <TITLE_FILTER>    : Substring that must appear in the title (e.g., "machine learning"). Use empty quotes "" to skip title filtering.
     [--start_year YEAR] : Start year for publication (inclusive, optional).
@@ -422,7 +493,7 @@ Examples:
        python xarxiv.py "OR John Doe, Jim Smith" 10 ""
 
     3. Search by title only and download PDFs:
-       python xarxiv.py "OR" 5 "fortran"
+       python xarxiv.py "" 5 "fortran"
 
     4. Search by both authors and title substring and download PDFs:
        python xarxiv.py "AND John Doe, Jim Smith" 5 "fortran"
@@ -431,7 +502,7 @@ Examples:
        python xarxiv.py "AND John Doe, Jim Smith" 10 "" --start_year 2015 --end_year 2020 --list
 
     6. Search by authors, list papers without downloading, and include abstracts:
-       python xarxiv.py "OR John Doe, Jim Smith" 10 "" --list --abstract
+       python xarxiv.py "" 10 "realized volatility" --list --abstract
     """
     print(usage_text)
 
@@ -452,7 +523,7 @@ Examples:
        python xarxiv.py "OR John Doe, Jim Smith" 10 ""
 
     3. Search by title only and download PDFs:
-       python xarxiv.py "OR" 5 "fortran"
+       python xarxiv.py "" 5 "fortran"
 
     4. Search by both authors and title substring and download PDFs:
        python xarxiv.py "AND John Doe, Jim Smith" 5 "fortran"
@@ -461,12 +532,12 @@ Examples:
        python xarxiv.py "AND John Doe, Jim Smith" 10 "" --start_year 2015 --end_year 2020 --list
 
     6. Search by authors, list papers without downloading, and include abstracts:
-       python xarxiv.py "OR John Doe, Jim Smith" 10 "" --list --abstract
+       python xarxiv.py "" 10 "realized volatility" --list --abstract
 """
     )
 
     # Positional arguments
-    parser.add_argument('authors_query', type=str, help='Author query with logical operator (e.g., "AND John Doe, Jim Smith")')
+    parser.add_argument('authors_query', type=str, help='Author query with logical operator (e.g., "AND John Doe, Jim Smith") or "" for no author filtering')
     parser.add_argument('n', type=int, help='Maximum number of PDFs to download')
     parser.add_argument('title_filter', type=str, help='Substring to filter titles (use "" to skip)')
 
@@ -501,7 +572,7 @@ Examples:
 
     # Display the search criteria
     print("=== arXiv PDF Downloader and Formatter ===\n")
-    print(f"Author Query     : {authors_query}")
+    print(f"Author Query     : {'None' if not authors_query.strip() else authors_query}")
     print(f"Title Filter     : {'None' if not title_filter.strip() else title_filter}")
     print(f"Year Range       : {'None' if not (start_year or end_year) else f'{start_year if start_year else "-∞"} to {end_year if end_year else "∞"}'}")
     print(f"Number of PDFs   : {n_pdfs}")
