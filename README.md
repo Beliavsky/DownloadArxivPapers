@@ -1,5 +1,5 @@
 # Download Arxiv Papers
-Python scripts to list or download papers from arXiv by author and/or title to the working directory. Search "Examples"
+Python scripts to list or download papers or references from arXiv by author and/or title to the working directory. Search "Examples"
 in the source code for usage. For example,
 
 `python xdownload_papers_arxiv.py "Richardson" 5 "fortran"`
